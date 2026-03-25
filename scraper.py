@@ -7,24 +7,55 @@ from bs4 import BeautifulSoup
 email_address = os.environ["EMAIL_ADDRESS"]
 email_password = os.environ["EMAIL_APP_PASSWORD"]
 
-url = "https://www.indeed.com/jobs?q=UKG+Kronos&l="
+search_urls = [
+    "https://www.indeed.com/jobs?q=UKG",
+    "https://www.indeed.com/jobs?q=Kronos",
+    "https://www.indeed.com/jobs?q=UKG+Dimensions",
+    "https://www.indeed.com/jobs?q=UKG+Ready"
+]
 
-headers = {"User-Agent": "Mozilla/5.0"}
-response = requests.get(url, headers=headers)
+headers = {
+    "User-Agent": "Mozilla/5.0"
+}
 
-soup = BeautifulSoup(response.text, "html.parser")
-
-jobs = soup.find_all("h2")
-
+keywords = ["ukg", "kronos", "dimensions", "ukg ready", "workforce management", "wfm"]
+seen = set()
 leads = []
 
-for job in jobs[:10]:
-    title = job.text.strip()
-    if "UKG" in title or "Kronos" in title:
-        leads.append(title)
+for url in search_urls:
+    try:
+        response = requests.get(url, headers=headers, timeout=20)
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for a in soup.find_all("a", href=True):
+            title = a.get_text(" ", strip=True)
+            href = a["href"]
+
+            if not title:
+                continue
+
+            lower_title = title.lower()
+
+            if not any(word in lower_title for word in keywords):
+                continue
+
+            if href.startswith("/"):
+                full_link = "https://www.indeed.com" + href
+            else:
+                full_link = href
+
+            key = (title, full_link)
+            if key in seen:
+                continue
+
+            seen.add(key)
+            leads.append(f"{title}\n{full_link}")
+
+    except Exception as e:
+        leads.append(f"Search failed for {url}: {e}")
 
 if leads:
-    body = "🔥 UKG Leads Today\n\n" + "\n".join(leads)
+    body = "🔥 UKG Leads Today\n\n" + "\n\n".join(leads[:15])
 else:
     body = "No leads found today."
 
