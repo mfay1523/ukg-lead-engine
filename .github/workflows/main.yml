@@ -1,38 +1,28 @@
-import os
-import smtplib
-from email.mime.text import MIMEText
-import requests
-from bs4 import BeautifulSoup
+name: Run UKG Lead Bot
 
-email_address = os.environ["EMAIL_ADDRESS"]
-email_password = os.environ["EMAIL_APP_PASSWORD"]
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  workflow_dispatch:
 
-url = "https://www.indeed.com/jobs?q=UKG+Kronos&l="
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
 
-headers = {"User-Agent": "Mozilla/5.0"}
-response = requests.get(url, headers=headers)
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-soup = BeautifulSoup(response.text, "html.parser")
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-jobs = soup.find_all("h2")
+      - name: Install stuff
+        run: pip install requests beautifulsoup4
 
-leads = []
-
-for job in jobs[:10]:
-    title = job.text.strip()
-    if "UKG" in title or "Kronos" in title:
-        leads.append(title)
-
-if leads:
-    body = "🔥 UKG Leads Today\n\n" + "\n".join(leads)
-else:
-    body = "No leads found today."
-
-msg = MIMEText(body)
-msg["Subject"] = "🔥 UKG Leads"
-msg["From"] = email_address
-msg["To"] = email_address
-
-with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-    server.login(email_address, email_password)
-    server.send_message(msg)
+      - name: Run script
+        env:
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: python scraper.py
