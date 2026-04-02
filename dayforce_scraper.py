@@ -2,6 +2,7 @@ import os
 import json
 import smtplib
 import requests
+from urllib.parse import urlparse
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -20,7 +21,9 @@ SEARCH_QUERIES = [
     "Dayforce analyst",
     "Dayforce administrator",
     "Dayforce specialist",
-    "Dayforce manager",
+    "Dayforce consultant",
+    "Dayforce implementation",
+    "Dayforce integration",
 ]
 
 EXCLUDE_COMPANY_TERMS = [
@@ -53,19 +56,19 @@ EXCLUDE_COMPANY_TERMS = [
     "dayforce",
 ]
 
-EXCLUDE_PUBLISHERS = [
+BAD_DOMAINS = [
     "career.com",
-    "glassdoor",
-    "ihirehr",
-    "jobilize",
-    "jobrapido",
-    "jooble",
-    "learn4good",
-    "lensa",
+    "ihirehr.com",
+    "jobilize.com",
+    "jobrapido.com",
+    "jooble.org",
+    "learn4good.com",
+    "lensa.com",
     "recruit.net",
-    "talents by vaia",
-    "teal",
-    "ziprecruiter",
+    "talents.vaia.com",
+    "vaia.com",
+    "tealhq.com",
+    "ziprecruiter.com",
 ]
 
 EXCLUDE_TEXT_TERMS = [
@@ -74,10 +77,6 @@ EXCLUDE_TEXT_TERMS = [
     "recruiter",
     "third party",
     "agency",
-    "implementation partner",
-    "managed services",
-    "services delivery partners",
-    "partner ecosystem",
 ]
 
 GOOD_TEXT_TERMS = [
@@ -97,154 +96,107 @@ US_STATE_CODES = {
 }
 
 
-def load_seen_links():
-    if not os.path.exists(SEEN_FILE):
-        return set()
-    try:
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return set(data if isinstance(data, list) else [])
-    except Exception as e:
-        print(f"Could not read {SEEN_FILE}: {e}")
-        return set()
-
-
-def save_seen_links(links):
-    try:
-        with open(SEEN_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(list(links)), f, indent=2)
-    except Exception as e:
-        print(f"Could not save {SEEN_FILE}: {e}")
-
-
 def clean_text(value):
     return " ".join((value or "").split()).strip()
+
+
+def extract_domain(link):
+    try:
+        netloc = urlparse(link).netloc.lower()
+        return netloc.replace("www.", "")
+    except:
+        return ""
+
+
+def is_bad_domain(link):
+    domain = extract_domain(link)
+    return any(bad in domain for bad in BAD_DOMAINS)
+
+
+def domain_to_company(link):
+    domain = extract_domain(link)
+    if not domain:
+        return ""
+
+    parts = domain.split(".")
+    base = parts[-2] if len(parts) >= 2 else domain
+    base = base.replace("-", " ").replace("_", " ")
+
+    return " ".join(word.capitalize() for word in base.split())
+
+
+def normalize_company(company, link):
+    company = clean_text(company)
+
+    if company and company.lower() != "unknown company":
+        return company
+
+    if is_bad_domain(link):
+        return company
+
+    return domain_to_company(link)
 
 
 def looks_us_based(job):
     country = clean_text(job.get("job_country", ""))
     state = clean_text(job.get("job_state", "")).upper()
-    city = clean_text(job.get("job_city", ""))
-    location = clean_text(job.get("job_location", ""))
 
     if country.upper() in {"US", "USA", "UNITED STATES"}:
         return True
     if state in US_STATE_CODES:
         return True
-    if "united states" in location.lower():
-        return True
-    if city and state in US_STATE_CODES:
-        return True
+
     return False
 
 
-def is_bad_link(link):
-    link = clean_text(link).lower()
-    bad_domains = [
-        "career.com",
-        "glassdoor",
-        "ihirehr",
-        "jobilize",
-        "jobrapido",
-        "jooble",
-        "learn4good",
-        "lensa",
-        "recruit.net",
-        "talents.vaia",
-        "vaia.com",
-        "tealhq",
-        "ziprecruiter",
-    ]
-    return any(domain in link for domain in bad_domains)
-
-
-def score_job(job):
-    title = clean_text(job.get("title", "")).lower()
-    description = clean_text(job.get("description", "")).lower()
-    publisher = clean_text(job.get("publisher", "")).lower()
-    text = f"{title} {description} {publisher}"
-
-    score = 0
-
-    if "dayforce" in text:
-        score += 5
-    if "ceridian" in text:
-        score += 3
-    if "payroll" in text:
-        score += 2
-    if "hris" in text:
-        score += 2
-    if "hcm" in text:
-        score += 2
-    if "wfm" in text:
-        score += 2
-    if "timekeeping" in text:
-        score += 1
-    if "administrator" in text or "admin" in text:
-        score += 1
-    if "analyst" in text:
-        score += 1
-    if "specialist" in text:
-        score += 1
-    if "manager" in text:
-        score += 1
-    if "lead" in text:
-        score += 1
-
-    return score
-
-
 def is_excluded(job):
-    employer = clean_text(job.get("company", "")).lower()
-    title = clean_text(job.get("title", "")).lower()
-    desc = clean_text(job.get("description", "")).lower()
-    publisher = clean_text(job.get("publisher", "")).lower()
-    link = clean_text(job.get("link", "")).lower()
-
-    blob = " ".join([employer, title, desc, publisher, link])
+    employer = job["company"].lower()
+    text = f"{job['title']} {job['description']}".lower()
 
     if not employer or employer == "unknown company":
         return True
     if any(term in employer for term in EXCLUDE_COMPANY_TERMS):
         return True
-    if any(term in publisher for term in EXCLUDE_PUBLISHERS):
+    if is_bad_domain(job["link"]):
         return True
-    if any(term in blob for term in EXCLUDE_TEXT_TERMS):
-        return True
-    if is_bad_link(link):
-        return True
-
-    # remove obvious vendor/internal Dayforce jobs even if company name is odd
-    if "dayforce platform" in blob or "services consultant" in title:
-        return True
-    if "services delivery partners" in blob:
+    if any(term in text for term in EXCLUDE_TEXT_TERMS):
         return True
 
     return False
 
 
 def is_relevant(job):
-    title = clean_text(job.get("title", "")).lower()
-    description = clean_text(job.get("description", "")).lower()
-    company = clean_text(job.get("company", "")).lower()
-
-    text = f"{title} {description} {company}"
-
+    text = f"{job['title']} {job['description']} {job['company']}".lower()
     return any(term in text for term in GOOD_TEXT_TERMS)
 
 
-def fetch_jsearch_results():
-    api_key = os.environ.get("JSEARCH_API_KEY")
-    if not api_key:
-        print("Missing JSEARCH_API_KEY")
-        return []
+def score_job(job):
+    text = f"{job['title']} {job['description']}".lower()
+
+    score = 0
+    if "dayforce" in text: score += 5
+    if "ceridian" in text: score += 3
+    if "payroll" in text: score += 2
+    if "hris" in text: score += 2
+    if "hcm" in text: score += 2
+    if "wfm" in text: score += 2
+    if "implementation" in text: score += 2
+    if "integration" in text: score += 2
+    if "consultant" in text: score += 1
+    if "analyst" in text: score += 1
+
+    return score
+
+
+def fetch_jobs():
+    api_key = os.environ["JSEARCH_API_KEY"]
 
     headers = {
         "x-rapidapi-key": api_key,
         "x-rapidapi-host": RAPIDAPI_HOST,
     }
 
-    all_jobs = []
+    results = []
 
     for query in SEARCH_QUERIES:
         params = {
@@ -252,154 +204,87 @@ def fetch_jsearch_results():
             "page": "1",
             "num_pages": "1",
             "country": "us",
-            "date_posted": "all",
         }
 
-        try:
-            response = requests.get(RAPIDAPI_URL, headers=headers, params=params, timeout=30)
-            print(f"Query '{query}' status: {response.status_code}")
+        res = requests.get(RAPIDAPI_URL, headers=headers, params=params)
+        data = res.json().get("data", [])
 
-            if response.status_code != 200:
-                print(f"Response text for '{query}': {response.text[:500]}")
+        for j in data:
+            if not looks_us_based(j):
                 continue
 
-            payload = response.json()
-            jobs = payload.get("data", [])
-            print(f"Query '{query}' returned {len(jobs)} raw jobs")
+            link = j.get("job_apply_link") or j.get("job_google_link") or ""
+            company = normalize_company(j.get("job_employer_name", ""), link)
 
-            for job in jobs:
-                if not looks_us_based(job):
-                    continue
+            job = {
+                "company": company,
+                "title": clean_text(j.get("job_title")),
+                "location": clean_text(j.get("job_location")),
+                "link": link,
+                "description": clean_text(j.get("job_description", ""))[:500],
+            }
 
-                employer = clean_text(job.get("job_employer_name", ""))
-                title = clean_text(job.get("job_title", ""))
-                city = clean_text(job.get("job_city", ""))
-                state = clean_text(job.get("job_state", ""))
-                location = clean_text(job.get("job_location", ""))
-                publisher = clean_text(job.get("job_publisher", ""))
-                description = clean_text(job.get("job_description", ""))
-                link = clean_text(job.get("job_apply_link", "")) or clean_text(job.get("job_google_link", ""))
+            if not is_relevant(job):
+                continue
+            if is_excluded(job):
+                continue
 
-                display_location = ", ".join(x for x in [city, state] if x) or location or "Unknown"
+            job["score"] = score_job(job)
+            results.append(job)
 
-                cleaned_job = {
-                    "company": employer,
-                    "title": title,
-                    "location": display_location,
-                    "publisher": publisher,
-                    "link": link,
-                    "description": description[:800],
-                }
-
-                if is_excluded(cleaned_job):
-                    continue
-
-                if not is_relevant(cleaned_job):
-                    continue
-
-                cleaned_job["score"] = score_job(cleaned_job)
-                all_jobs.append(cleaned_job)
-
-        except Exception as e:
-            print(f"JSearch request failed for '{query}': {e}")
-
-    return all_jobs
+    return results
 
 
-def dedupe_jobs(jobs):
+def dedupe(jobs):
     seen = set()
-    output = []
+    out = []
 
-    for job in jobs:
-        key = (
-            clean_text(job.get("company", "")).lower(),
-            clean_text(job.get("title", "")).lower(),
-            clean_text(job.get("location", "")).lower(),
-            clean_text(job.get("link", "")).lower(),
-        )
+    for j in jobs:
+        key = f"{j['company']}|{j['title']}|{j['location']}"
         if key not in seen:
             seen.add(key)
-            output.append(job)
+            out.append(j)
 
-    return output
-
-
-def build_email_body(jobs):
-    if not jobs:
-        return "No strong Dayforce hiring leads were found today."
-
-    jobs = sorted(jobs, key=lambda x: x.get("score", 0), reverse=True)
-
-    lines = []
-    lines.append("Strong Dayforce hiring leads:\n")
-
-    for idx, job in enumerate(jobs, start=1):
-        lines.append(f"{idx}. {job.get('company', 'Unknown Company')}")
-        lines.append(f"   Title: {job.get('title', 'Unknown Title')}")
-        lines.append(f"   Location: {job.get('location', 'Unknown')}")
-        lines.append(f"   Source: {job.get('publisher', 'Unknown')}")
-        lines.append(f"   Score: {job.get('score', 0)}")
-        if job.get("link"):
-            lines.append(f"   Link: {job['link']}")
-        if job.get("description"):
-            lines.append(f"   Summary: {job['description'][:250]}")
-        lines.append("")
-
-    return "\n".join(lines)
+    return out
 
 
 def send_email(subject, body):
-    email_user = os.environ.get("EMAIL_ADDRESS")
-    email_pass = os.environ.get("EMAIL_APP_PASSWORD")
-    alert_to = os.environ.get("EMAIL_ADDRESS")
+    email = os.environ["EMAIL_ADDRESS"]
+    password = os.environ["EMAIL_APP_PASSWORD"]
 
-    if not email_user or not email_pass or not alert_to:
-        print("Missing EMAIL_ADDRESS or EMAIL_APP_PASSWORD")
-        print(body)
-        return
+    msg = MIMEMultipart()
+    msg["From"] = email
+    msg["To"] = email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
 
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = email_user
-        msg["To"] = alert_to
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
-
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(email_user, email_pass)
-            server.sendmail(email_user, [alert_to], msg.as_string())
-
-        print("Email sent successfully")
-    except Exception as e:
-        print(f"Email send failed: {e}")
+    with smtplib.SMTP("smtp.gmail.com", 587) as s:
+        s.starttls()
+        s.login(email, password)
+        s.sendmail(email, [email], msg.as_string())
 
 
 def main():
-    print("Fetching JSearch Dayforce jobs...")
-    jobs = fetch_jsearch_results()
-    print(f"Raw filtered jobs: {len(jobs)}")
+    jobs = fetch_jobs()
+    jobs = dedupe(jobs)
 
-    jobs = dedupe_jobs(jobs)
-    print(f"After dedupe: {len(jobs)}")
+    if not jobs:
+        send_email("Dayforce Leads: 0", "No Dayforce hiring leads found.")
+        return
 
-    seen_links = load_seen_links()
-    new_jobs = []
+    jobs = sorted(jobs, key=lambda x: x["score"], reverse=True)
 
-    for job in jobs:
-        link = clean_text(job.get("link", ""))
-        dedupe_key = link or f"{job['company']}|{job['title']}|{job['location']}"
-        if dedupe_key not in seen_links:
-            new_jobs.append(job)
-            seen_links.add(dedupe_key)
+    lines = ["Dayforce hiring leads:\n"]
 
-    save_seen_links(seen_links)
-    print(f"New jobs: {len(new_jobs)}")
+    for j in jobs[:20]:
+        lines.append(f"{j['company']}")
+        lines.append(f"  {j['title']}")
+        lines.append(f"  {j['location']}")
+        lines.append(f"  Score: {j['score']}")
+        lines.append(f"  {j['link']}")
+        lines.append("")
 
-    subject = f"Dayforce Hiring Leads: {len(new_jobs)}"
-    body = build_email_body(new_jobs[:25])
-    send_email(subject, body)
-    print(body)
+    send_email(f"Dayforce Leads: {len(jobs)}", "\n".join(lines))
 
 
 if __name__ == "__main__":
