@@ -24,11 +24,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          pip install requests
 
       - name: Run Dayforce bot
         env:
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          JSEARCH_API_KEY: ${{ secrets.JSEARCH_API_KEY }}
         run: |
           python dayforce_scraper.py
