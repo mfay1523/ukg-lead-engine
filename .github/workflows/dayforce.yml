@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Show files
+      - name: Show repo files (debug)
         run: ls -la
 
       - name: Set up Python
@@ -28,8 +28,7 @@ jobs:
 
       - name: Run Dayforce bot
         env:
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          ALERT_TO: ${{ secrets.ALERT_TO }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
         run: |
-          python ./dayforce_scraper.py
+          python dayforce_scraper.py
