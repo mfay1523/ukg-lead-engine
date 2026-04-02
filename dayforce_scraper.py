@@ -2,112 +2,104 @@ import os
 import json
 import smtplib
 import requests
-import xml.etree.ElementTree as ET
+from bs4 import BeautifulSoup
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 SEEN_FILE = "seen_jobs_dayforce.json"
 
-EXCLUDE_COMPANIES = [
-    "rsm","pwc","hub international","marsh","red pill labs",
-    "enforce consulting","seequelle","providence technology services",
-    "silver cloud","axl global consulting","allegis","teksystems",
-    "insight global","randstad","kforce","robert half",
-    "deloitte","accenture","kpmg","ey"
+EXCLUDE_TERMS = [
+    "consulting", "staffing", "recruiting", "agency",
+    "partner", "solutions", "services", "llc"
 ]
 
-KEYWORDS = [
-    "dayforce",
-    "ceridian",
-    "ceridian dayforce"
+KEYWORDS = ["dayforce", "ceridian"]
+
+SEARCH_URLS = [
+    "https://www.indeed.com/jobs?q=dayforce&l=United+States",
+    "https://www.indeed.com/jobs?q=ceridian&l=United+States"
 ]
 
-SEARCH_QUERIES = [
-    "dayforce jobs",
-    "ceridian dayforce jobs",
-    "dayforce payroll",
-    "dayforce hcm",
-    "dayforce wfm",
-    "dayforce analyst",
-    "dayforce administrator",
-    "dayforce specialist",
-]
-
-def load_seen_links():
+def load_seen():
     if not os.path.exists(SEEN_FILE):
         return set()
-    with open(SEEN_FILE, "r") as f:
-        return set(json.load(f))
+    return set(json.load(open(SEEN_FILE)))
 
-def save_seen_links(links):
-    with open(SEEN_FILE, "w") as f:
-        json.dump(list(links), f, indent=2)
+def save_seen(seen):
+    json.dump(list(seen), open(SEEN_FILE, "w"))
 
-def is_excluded(text):
-    text = text.lower()
-    return any(bad in text for bad in EXCLUDE_COMPANIES)
+def is_valid_company(company):
+    c = company.lower()
+    return not any(term in c for term in EXCLUDE_TERMS)
 
-def fetch_google_rss():
-    results = []
+def fetch_jobs():
+    jobs = []
 
-    for query in SEARCH_QUERIES:
-        url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}"
+    for url in SEARCH_URLS:
         try:
-            response = requests.get(url, timeout=15)
-            root = ET.fromstring(response.content)
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            soup = BeautifulSoup(r.text, "html.parser")
 
-            for item in root.findall(".//item"):
-                title = item.find("title").text or ""
-                link = item.find("link").text or ""
+            for card in soup.select("a[href]"):
+                text = card.get_text(" ", strip=True)
 
-                text = f"{title} {link}".lower()
-
-                if not any(k in text for k in KEYWORDS):
+                if not text:
                     continue
 
-                if is_excluded(text):
+                blob = text.lower()
+
+                if not any(k in blob for k in KEYWORDS):
                     continue
 
-                results.append({
-                    "title": title,
-                    "link": link,
-                    "source": "Google RSS"
+                href = card.get("href")
+                if not href:
+                    continue
+
+                if href.startswith("/"):
+                    href = "https://www.indeed.com" + href
+
+                jobs.append({
+                    "title": text[:150],
+                    "company": "",
+                    "link": href
                 })
 
         except Exception as e:
-            print("RSS error:", e)
+            print("Error:", e)
 
-    return results
+    return jobs
 
 def dedupe(jobs):
     seen = set()
-    output = []
+    out = []
     for j in jobs:
         if j["link"] not in seen:
             seen.add(j["link"])
-            output.append(j)
-    return output
+            out.append(j)
+    return out
 
 def send_email(subject, body):
-    email_user = os.environ["EMAIL_ADDRESS"]
-    email_pass = os.environ["EMAIL_APP_PASSWORD"]
+    email = os.environ["EMAIL_ADDRESS"]
+    password = os.environ["EMAIL_APP_PASSWORD"]
 
     msg = MIMEMultipart()
-    msg["From"] = email_user
-    msg["To"] = email_user
+    msg["From"] = email
+    msg["To"] = email
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
 
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.starttls()
-        server.login(email_user, email_pass)
-        server.sendmail(email_user, [email_user], msg.as_string())
+    with smtplib.SMTP("smtp.gmail.com", 587) as s:
+        s.starttls()
+        s.login(email, password)
+        s.sendmail(email, [email], msg.as_string())
 
-def build_body(jobs):
+def build_email(jobs):
     if not jobs:
-        return "No Dayforce leads found."
+        return "No Dayforce hiring activity found."
 
-    lines = ["Dayforce Leads:\n"]
+    lines = ["US Dayforce Hiring Activity:\n"]
+
     for i, j in enumerate(jobs, 1):
         lines.append(f"{i}. {j['title']}")
         lines.append(f"   {j['link']}")
@@ -116,27 +108,26 @@ def build_body(jobs):
     return "\n".join(lines)
 
 def main():
-    print("Fetching RSS results...")
-    jobs = fetch_google_rss()
-
-    print(f"Raw results: {len(jobs)}")
+    print("Fetching jobs...")
+    jobs = fetch_jobs()
+    print("Raw:", len(jobs))
 
     jobs = dedupe(jobs)
 
-    seen = load_seen_links()
-    new_jobs = []
+    seen = load_seen()
+    new = []
 
     for j in jobs:
         if j["link"] not in seen:
-            new_jobs.append(j)
+            new.append(j)
             seen.add(j["link"])
 
-    save_seen_links(seen)
+    save_seen(seen)
 
-    print(f"New jobs: {len(new_jobs)}")
+    print("New:", len(new))
 
-    subject = f"Dayforce Leads: {len(new_jobs)}"
-    body = build_body(new_jobs[:20])
+    body = build_email(new[:25])
+    subject = f"Dayforce Hiring Leads: {len(new)}"
 
     send_email(subject, body)
 
