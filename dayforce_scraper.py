@@ -50,15 +50,22 @@ EXCLUDE_COMPANY_TERMS = [
     "teksystems",
     "wise consulting",
     "wipro",
+    "dayforce",
 ]
 
 EXCLUDE_PUBLISHERS = [
     "career.com",
+    "glassdoor",
+    "ihirehr",
     "jobilize",
     "jobrapido",
+    "jooble",
     "learn4good",
+    "lensa",
+    "recruit.net",
     "talents by vaia",
     "teal",
+    "ziprecruiter",
 ]
 
 EXCLUDE_TEXT_TERMS = [
@@ -69,6 +76,18 @@ EXCLUDE_TEXT_TERMS = [
     "agency",
     "implementation partner",
     "managed services",
+    "services delivery partners",
+    "partner ecosystem",
+]
+
+GOOD_TEXT_TERMS = [
+    "dayforce",
+    "ceridian",
+    "payroll",
+    "hris",
+    "hcm",
+    "wfm",
+    "timekeeping",
 ]
 
 US_STATE_CODES = {
@@ -119,10 +138,31 @@ def looks_us_based(job):
     return False
 
 
+def is_bad_link(link):
+    link = clean_text(link).lower()
+    bad_domains = [
+        "career.com",
+        "glassdoor",
+        "ihirehr",
+        "jobilize",
+        "jobrapido",
+        "jooble",
+        "learn4good",
+        "lensa",
+        "recruit.net",
+        "talents.vaia",
+        "vaia.com",
+        "tealhq",
+        "ziprecruiter",
+    ]
+    return any(domain in link for domain in bad_domains)
+
+
 def score_job(job):
     title = clean_text(job.get("title", "")).lower()
     description = clean_text(job.get("description", "")).lower()
-    text = f"{title} {description}"
+    publisher = clean_text(job.get("publisher", "")).lower()
+    text = f"{title} {description} {publisher}"
 
     score = 0
 
@@ -159,16 +199,25 @@ def is_excluded(job):
     title = clean_text(job.get("title", "")).lower()
     desc = clean_text(job.get("description", "")).lower()
     publisher = clean_text(job.get("publisher", "")).lower()
+    link = clean_text(job.get("link", "")).lower()
 
-    blob = " ".join([employer, title, desc, publisher])
+    blob = " ".join([employer, title, desc, publisher, link])
 
+    if not employer or employer == "unknown company":
+        return True
     if any(term in employer for term in EXCLUDE_COMPANY_TERMS):
         return True
     if any(term in publisher for term in EXCLUDE_PUBLISHERS):
         return True
     if any(term in blob for term in EXCLUDE_TEXT_TERMS):
         return True
-    if employer == "dayforce":
+    if is_bad_link(link):
+        return True
+
+    # remove obvious vendor/internal Dayforce jobs even if company name is odd
+    if "dayforce platform" in blob or "services consultant" in title:
+        return True
+    if "services delivery partners" in blob:
         return True
 
     return False
@@ -181,15 +230,7 @@ def is_relevant(job):
 
     text = f"{title} {description} {company}"
 
-    # Much looser than before:
-    # allow anything with Dayforce/Ceridian OR a likely adjacent HRIS/payroll title
-    if "dayforce" in text or "ceridian" in text:
-        return True
-
-    if any(term in text for term in ["payroll", "hris", "hcm", "wfm", "timekeeping"]):
-        return True
-
-    return False
+    return any(term in text for term in GOOD_TEXT_TERMS)
 
 
 def fetch_jsearch_results():
@@ -230,8 +271,8 @@ def fetch_jsearch_results():
                 if not looks_us_based(job):
                     continue
 
-                employer = clean_text(job.get("job_employer_name", "Unknown Company"))
-                title = clean_text(job.get("job_title", "Unknown Title"))
+                employer = clean_text(job.get("job_employer_name", ""))
+                title = clean_text(job.get("job_title", ""))
                 city = clean_text(job.get("job_city", ""))
                 state = clean_text(job.get("job_state", ""))
                 location = clean_text(job.get("job_location", ""))
@@ -285,12 +326,12 @@ def dedupe_jobs(jobs):
 
 def build_email_body(jobs):
     if not jobs:
-        return "No Dayforce hiring leads were found today."
+        return "No strong Dayforce hiring leads were found today."
 
     jobs = sorted(jobs, key=lambda x: x.get("score", 0), reverse=True)
 
     lines = []
-    lines.append("Dayforce hiring leads:\n")
+    lines.append("Strong Dayforce hiring leads:\n")
 
     for idx, job in enumerate(jobs, start=1):
         lines.append(f"{idx}. {job.get('company', 'Unknown Company')}")
