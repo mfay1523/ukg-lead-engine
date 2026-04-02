@@ -347,14 +347,9 @@ def build_email_body(jobs):
 
 
 def send_email(subject, body):
-    email_user = os.getenv("EMAIL_USER")
-    email_pass = os.getenv("EMAIL_PASS")
-    alert_to = os.getenv("ALERT_TO")
-
-    if not email_user or not email_pass or not alert_to:
-        print("Missing EMAIL_USER / EMAIL_PASS / ALERT_TO")
-        print(body)
-        return
+    email_user = os.environ["EMAIL_ADDRESS"]
+    email_pass = os.environ["EMAIL_APP_PASSWORD"]
+    alert_to = os.environ["EMAIL_ADDRESS"]
 
     msg = MIMEMultipart()
     msg["From"] = email_user
@@ -365,7 +360,7 @@ def send_email(subject, body):
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
         server.login(email_user, email_pass)
-        server.sendmail(email_user, [x.strip() for x in alert_to.split(",")], msg.as_string())
+        server.sendmail(email_user, [alert_to], msg.as_string())
 
 
 # =========================
