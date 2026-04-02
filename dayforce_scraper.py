@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from urllib.parse import urljoin
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -12,8 +13,10 @@ USER_AGENT = (
     "Chrome/123.0 Safari/537.36"
 )
 
+HEADERS = {"User-Agent": USER_AGENT}
 SEEN_FILE = "seen_jobs_dayforce.json"
 MIN_SCORE = 1
+REQUEST_TIMEOUT = 20
 
 EXCLUDE_COMPANIES = [
     "rsm",
@@ -38,7 +41,6 @@ EXCLUDE_COMPANIES = [
     "ey",
 ]
 
-# Much looser keyword list
 KEYWORDS = [
     "dayforce",
     "ceridian",
@@ -56,7 +58,7 @@ KEYWORDS = [
     "dayforce manager",
 ]
 
-# Broader boards to scan
+# Replace these with companies you actually want to monitor.
 GREENHOUSE_BOARDS = [
     "https://boards.greenhouse.io/embed/job_board?for=hubspot",
     "https://boards.greenhouse.io/embed/job_board?for=doordash",
@@ -77,6 +79,11 @@ LEVER_BOARDS = [
     "https://jobs.lever.co/mongodb",
 ]
 
+
+def clean_text(value):
+    return " ".join((value or "").split()).strip()
+
+
 def load_seen_links():
     if not os.path.exists(SEEN_FILE):
         return set()
@@ -84,18 +91,28 @@ def load_seen_links():
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             return set(data if isinstance(data, list) else [])
-    except Exception:
+    except Exception as e:
+        print(f"Could not read {SEEN_FILE}: {e}")
         return set()
+
 
 def save_seen_links(links):
     try:
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
             json.dump(sorted(list(links)), f, indent=2)
     except Exception as e:
-        print(f"Could not save seen links: {e}")
+        print(f"Could not save {SEEN_FILE}: {e}")
 
-def clean_text(value):
-    return " ".join((value or "").split()).strip()
+
+def fetch_soup(url):
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        return BeautifulSoup(resp.text, "html.parser")
+    except Exception as e:
+        print(f"Request failed for {url}: {e}")
+        return None
+
 
 def is_excluded_company(job):
     company = clean_text(job.get("company", "")).lower()
@@ -104,6 +121,7 @@ def is_excluded_company(job):
         job.get("company", ""),
         job.get("summary", ""),
         job.get("location", ""),
+        job.get("description", ""),
         job.get("link", ""),
     ]).lower()
 
@@ -112,12 +130,14 @@ def is_excluded_company(job):
             return True
     return False
 
+
 def score_job(job):
     text = " ".join([
         job.get("title", ""),
         job.get("company", ""),
         job.get("summary", ""),
         job.get("location", ""),
+        job.get("description", ""),
         job.get("link", ""),
     ]).lower()
 
@@ -135,7 +155,7 @@ def score_job(job):
         score += 1
     if "wfm" in text:
         score += 1
-    if "time" in text:
+    if "time" in text or "timekeeping" in text:
         score += 1
     if "administrator" in text:
         score += 1
@@ -151,6 +171,7 @@ def score_job(job):
         score += 1
 
     return score
+
 
 def dedupe_jobs(jobs):
     seen = set()
@@ -168,6 +189,12 @@ def dedupe_jobs(jobs):
 
     return output
 
+
+def has_dayforce_keyword(text):
+    text = (text or "").lower()
+    return any(keyword in text for keyword in KEYWORDS)
+
+
 def is_relevant(job):
     if is_excluded_company(job):
         return False
@@ -177,88 +204,142 @@ def is_relevant(job):
         job.get("company", ""),
         job.get("summary", ""),
         job.get("location", ""),
+        job.get("description", ""),
         job.get("link", ""),
     ]).lower()
 
-    if not any(keyword in text for keyword in KEYWORDS):
+    if not has_dayforce_keyword(text):
         return False
 
     job["score"] = score_job(job)
     return job["score"] >= MIN_SCORE
 
+
+def extract_greenhouse_job_links(board_url):
+    jobs = []
+    soup = fetch_soup(board_url)
+    if not soup:
+        return jobs
+
+    for a in soup.select("a[href]"):
+        title = clean_text(a.get_text(" ", strip=True))
+        href = a.get("href", "")
+        if not title or not href:
+            continue
+
+        if "/jobs/" not in href and "gh_jid" not in href:
+            continue
+
+        full_link = urljoin("https://boards.greenhouse.io", href)
+        company = board_url.split("for=")[-1]
+
+        location = ""
+        parent = a.parent
+        if parent:
+            text = clean_text(parent.get_text(" ", strip=True))
+            if text and text != title:
+                location = text.replace(title, "").strip(" -|,")
+
+        jobs.append({
+            "title": title[:180],
+            "company": company,
+            "location": location[:120],
+            "summary": title[:400],
+            "link": full_link,
+            "source": "Greenhouse",
+        })
+
+    return jobs
+
+
+def extract_lever_job_links(board_url):
+    jobs = []
+    soup = fetch_soup(board_url)
+    if not soup:
+        return jobs
+
+    for a in soup.select("a[href]"):
+        title = clean_text(a.get_text(" ", strip=True))
+        href = a.get("href", "")
+        if not title or not href:
+            continue
+
+        if "/jobs.lever.co/" not in href and "/lever.co/" not in href and not href.startswith("/"):
+            continue
+
+        full_link = urljoin(board_url.rstrip("/") + "/", href)
+        company = board_url.rstrip("/").split("/")[-1]
+
+        jobs.append({
+            "title": title[:180],
+            "company": company,
+            "location": "",
+            "summary": title[:400],
+            "link": full_link,
+            "source": "Lever",
+        })
+
+    return jobs
+
+
+def enrich_job_with_description(job):
+    soup = fetch_soup(job["link"])
+    if not soup:
+        job["description"] = ""
+        return job
+
+    text = clean_text(soup.get_text(" ", strip=True))
+    job["description"] = text[:12000]
+
+    if not job.get("location"):
+        location_selectors = [
+            ".location",
+            ".job__location",
+            ".posting-categories .location",
+            "[data-qa='posting-location']",
+        ]
+        for selector in location_selectors:
+            loc_el = soup.select_one(selector)
+            if loc_el:
+                job["location"] = clean_text(loc_el.get_text(" ", strip=True))[:120]
+                break
+
+    return job
+
+
 def fetch_greenhouse_results():
-    results = []
-    headers = {"User-Agent": USER_AGENT}
+    listing_jobs = []
+    enriched_jobs = []
 
-    for url in GREENHOUSE_BOARDS:
-        try:
-            resp = requests.get(url, headers=headers, timeout=20)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
+    for board_url in GREENHOUSE_BOARDS:
+        listing_jobs.extend(extract_greenhouse_job_links(board_url))
 
-            for a in soup.select("a[href]"):
-                title = clean_text(a.get_text(" ", strip=True))
-                href = a.get("href", "")
+    print(f"Greenhouse listing jobs found: {len(listing_jobs)}")
 
-                if not title:
-                    continue
+    for job in listing_jobs:
+        enriched = enrich_job_with_description(job)
+        if is_relevant(enriched):
+            enriched_jobs.append(enriched)
 
-                blob = f"{title} {href}".lower()
-                if not any(keyword in blob for keyword in KEYWORDS):
-                    continue
+    return enriched_jobs
 
-                if href.startswith("/"):
-                    href = "https://boards.greenhouse.io" + href
-
-                results.append({
-                    "title": title[:180],
-                    "company": url.split("for=")[-1],
-                    "location": "",
-                    "summary": title[:400],
-                    "link": href,
-                    "source": "Greenhouse",
-                })
-        except Exception as e:
-            print(f"Greenhouse failed for {url}: {e}")
-
-    return results
 
 def fetch_lever_results():
-    results = []
-    headers = {"User-Agent": USER_AGENT}
+    listing_jobs = []
+    enriched_jobs = []
 
-    for url in LEVER_BOARDS:
-        try:
-            resp = requests.get(url, headers=headers, timeout=20)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
+    for board_url in LEVER_BOARDS:
+        listing_jobs.extend(extract_lever_job_links(board_url))
 
-            for a in soup.select("a[href]"):
-                title = clean_text(a.get_text(" ", strip=True))
-                href = a.get("href", "")
+    print(f"Lever listing jobs found: {len(listing_jobs)}")
 
-                if not title:
-                    continue
+    for job in listing_jobs:
+        enriched = enrich_job_with_description(job)
+        if is_relevant(enriched):
+            enriched_jobs.append(enriched)
 
-                blob = f"{title} {href}".lower()
-                if not any(keyword in blob for keyword in KEYWORDS):
-                    continue
+    return enriched_jobs
 
-                if href.startswith("/"):
-                    href = url.rstrip("/") + href
-
-                results.append({
-                    "title": title[:180],
-                    "company": url.split("/")[-1],
-                    "location": "",
-                    "summary": title[:400],
-                    "link": href,
-                    "source": "Lever",
-                })
-        except Exception as e:
-            print(f"Lever failed for {url}: {e}")
-
-    return results
 
 def build_email_body(jobs, debug_summary):
     lines = [debug_summary, ""]
@@ -276,10 +357,12 @@ def build_email_body(jobs, debug_summary):
         lines.append(f"   Source: {job.get('source', 'Unknown')}")
         lines.append(f"   Score: {job.get('score', 0)}")
         lines.append(f"   Link: {job.get('link', '')}")
-        lines.append(f"   Summary: {job.get('summary', '')[:250]}")
+        desc = clean_text(job.get("description", ""))[:250]
+        lines.append(f"   Summary: {desc}")
         lines.append("")
 
     return "\n".join(lines)
+
 
 def send_email(subject, body):
     try:
@@ -302,17 +385,18 @@ def send_email(subject, body):
     except Exception as e:
         print(f"Email send failed: {e}")
 
+
 def main():
     all_jobs = []
 
     print("Fetching Greenhouse results...")
     greenhouse_jobs = fetch_greenhouse_results()
-    print(f"Greenhouse results found: {len(greenhouse_jobs)}")
+    print(f"Greenhouse relevant jobs found: {len(greenhouse_jobs)}")
     all_jobs.extend(greenhouse_jobs)
 
     print("Fetching Lever results...")
     lever_jobs = fetch_lever_results()
-    print(f"Lever results found: {len(lever_jobs)}")
+    print(f"Lever relevant jobs found: {len(lever_jobs)}")
     all_jobs.extend(lever_jobs)
 
     print(f"Raw results before dedupe: {len(all_jobs)}")
@@ -320,14 +404,13 @@ def main():
     all_jobs = dedupe_jobs(all_jobs)
     print(f"After dedupe: {len(all_jobs)}")
 
-    relevant_jobs = [job for job in all_jobs if is_relevant(job)]
-    relevant_jobs = sorted(relevant_jobs, key=lambda x: x.get("score", 0), reverse=True)
-    print(f"Relevant jobs: {len(relevant_jobs)}")
+    all_jobs = sorted(all_jobs, key=lambda x: x.get("score", 0), reverse=True)
+    print(f"Relevant jobs after dedupe: {len(all_jobs)}")
 
     seen_links = load_seen_links()
     new_jobs = []
 
-    for job in relevant_jobs:
+    for job in all_jobs:
         link = clean_text(job.get("link", ""))
         if link and link not in seen_links:
             new_jobs.append(job)
@@ -337,10 +420,9 @@ def main():
     print(f"New jobs: {len(new_jobs)}")
 
     debug_summary = (
-        f"Greenhouse results found: {len(greenhouse_jobs)}\n"
-        f"Lever results found: {len(lever_jobs)}\n"
+        f"Greenhouse relevant jobs found: {len(greenhouse_jobs)}\n"
+        f"Lever relevant jobs found: {len(lever_jobs)}\n"
         f"Raw results after dedupe: {len(all_jobs)}\n"
-        f"Relevant jobs: {len(relevant_jobs)}\n"
         f"New jobs: {len(new_jobs)}"
     )
 
@@ -349,6 +431,7 @@ def main():
 
     send_email(subject, body)
     print(body)
+
 
 if __name__ == "__main__":
     main()
