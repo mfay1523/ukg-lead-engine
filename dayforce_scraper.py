@@ -54,7 +54,6 @@ EXCLUDE_COMPANY_TERMS = [
 
 EXCLUDE_PUBLISHERS = [
     "career.com",
-    "ihirehr",
     "jobilize",
     "jobrapido",
     "learn4good",
@@ -66,28 +65,10 @@ EXCLUDE_TEXT_TERMS = [
     "staffing",
     "recruiting",
     "recruiter",
-    "consulting",
-    "implementation consultant",
-    "implementation partner",
-    "managed services",
     "third party",
     "agency",
-]
-
-GOOD_TITLE_TERMS = [
-    "dayforce",
-    "ceridian",
-    "payroll",
-    "hris",
-    "hcm",
-    "wfm",
-    "timekeeping",
-    "administrator",
-    "admin",
-    "analyst",
-    "specialist",
-    "manager",
-    "lead",
+    "implementation partner",
+    "managed services",
 ]
 
 US_STATE_CODES = {
@@ -181,25 +162,34 @@ def is_excluded(job):
 
     blob = " ".join([employer, title, desc, publisher])
 
-    if not employer or employer == "unknown company":
-        return True
     if any(term in employer for term in EXCLUDE_COMPANY_TERMS):
         return True
     if any(term in publisher for term in EXCLUDE_PUBLISHERS):
         return True
     if any(term in blob for term in EXCLUDE_TEXT_TERMS):
         return True
-
-    # exclude obvious Dayforce internal jobs
     if employer == "dayforce":
         return True
 
     return False
 
 
-def title_is_relevant(title):
-    title = clean_text(title).lower()
-    return any(term in title for term in GOOD_TITLE_TERMS)
+def is_relevant(job):
+    title = clean_text(job.get("title", "")).lower()
+    description = clean_text(job.get("description", "")).lower()
+    company = clean_text(job.get("company", "")).lower()
+
+    text = f"{title} {description} {company}"
+
+    # Much looser than before:
+    # allow anything with Dayforce/Ceridian OR a likely adjacent HRIS/payroll title
+    if "dayforce" in text or "ceridian" in text:
+        return True
+
+    if any(term in text for term in ["payroll", "hris", "hcm", "wfm", "timekeeping"]):
+        return True
+
+    return False
 
 
 def fetch_jsearch_results():
@@ -240,8 +230,8 @@ def fetch_jsearch_results():
                 if not looks_us_based(job):
                     continue
 
-                employer = clean_text(job.get("job_employer_name", ""))
-                title = clean_text(job.get("job_title", ""))
+                employer = clean_text(job.get("job_employer_name", "Unknown Company"))
+                title = clean_text(job.get("job_title", "Unknown Title"))
                 city = clean_text(job.get("job_city", ""))
                 state = clean_text(job.get("job_state", ""))
                 location = clean_text(job.get("job_location", ""))
@@ -263,7 +253,7 @@ def fetch_jsearch_results():
                 if is_excluded(cleaned_job):
                     continue
 
-                if not title_is_relevant(title) and "dayforce" not in description.lower() and "ceridian" not in description.lower():
+                if not is_relevant(cleaned_job):
                     continue
 
                 cleaned_job["score"] = score_job(cleaned_job)
@@ -294,15 +284,13 @@ def dedupe_jobs(jobs):
 
 
 def build_email_body(jobs):
-    lines = []
-
     if not jobs:
-        lines.append("No strong Dayforce hiring leads were found today.")
-        return "\n".join(lines)
+        return "No Dayforce hiring leads were found today."
 
     jobs = sorted(jobs, key=lambda x: x.get("score", 0), reverse=True)
 
-    lines.append("Strong Dayforce hiring leads:\n")
+    lines = []
+    lines.append("Dayforce hiring leads:\n")
 
     for idx, job in enumerate(jobs, start=1):
         lines.append(f"{idx}. {job.get('company', 'Unknown Company')}")
