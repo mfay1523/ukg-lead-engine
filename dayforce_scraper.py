@@ -5,7 +5,6 @@ import requests
 from bs4 import BeautifulSoup
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from urllib.parse import quote_plus
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -15,18 +14,6 @@ USER_AGENT = (
 
 SEEN_FILE = "seen_jobs_dayforce.json"
 MIN_SCORE = 1
-
-SEARCH_QUERIES = [
-    "Dayforce jobs",
-    "Ceridian Dayforce jobs",
-    "Dayforce payroll jobs",
-    "Dayforce WFM jobs",
-    "Dayforce HCM jobs",
-    "Dayforce HRIS jobs",
-    "Dayforce implementation jobs",
-    "Dayforce migration jobs",
-    "Dayforce integration jobs",
-]
 
 EXCLUDE_COMPANIES = [
     "rsm",
@@ -49,6 +36,45 @@ EXCLUDE_COMPANIES = [
     "accenture",
     "kpmg",
     "ey",
+]
+
+# Much looser keyword list
+KEYWORDS = [
+    "dayforce",
+    "ceridian",
+    "ceridian dayforce",
+    "dayforce hcm",
+    "dayforce payroll",
+    "dayforce wfm",
+    "dayforce time",
+    "dayforce hris",
+    "dayforce analyst",
+    "dayforce administrator",
+    "dayforce specialist",
+    "dayforce consultant",
+    "dayforce support",
+    "dayforce manager",
+]
+
+# Broader boards to scan
+GREENHOUSE_BOARDS = [
+    "https://boards.greenhouse.io/embed/job_board?for=hubspot",
+    "https://boards.greenhouse.io/embed/job_board?for=doordash",
+    "https://boards.greenhouse.io/embed/job_board?for=datadog",
+    "https://boards.greenhouse.io/embed/job_board?for=affirm",
+    "https://boards.greenhouse.io/embed/job_board?for=coinbase",
+    "https://boards.greenhouse.io/embed/job_board?for=robinhood",
+    "https://boards.greenhouse.io/embed/job_board?for=brex",
+    "https://boards.greenhouse.io/embed/job_board?for=stripe",
+]
+
+LEVER_BOARDS = [
+    "https://jobs.lever.co/figma",
+    "https://jobs.lever.co/notion",
+    "https://jobs.lever.co/ramp",
+    "https://jobs.lever.co/chime",
+    "https://jobs.lever.co/discord",
+    "https://jobs.lever.co/mongodb",
 ]
 
 def load_seen_links():
@@ -78,6 +104,7 @@ def is_excluded_company(job):
         job.get("company", ""),
         job.get("summary", ""),
         job.get("location", ""),
+        job.get("link", ""),
     ]).lower()
 
     for bad in EXCLUDE_COMPANIES:
@@ -95,24 +122,34 @@ def score_job(job):
     ]).lower()
 
     score = 0
+
     if "dayforce" in text:
         score += 5
     if "ceridian" in text:
-        score += 2
+        score += 3
     if "payroll" in text:
-        score += 1
-    if "wfm" in text:
-        score += 1
-    if "hcm" in text:
         score += 1
     if "hris" in text:
         score += 1
-    if "implementation" in text:
-        score += 2
-    if "migration" in text:
-        score += 2
-    if "integration" in text:
-        score += 2
+    if "hcm" in text:
+        score += 1
+    if "wfm" in text:
+        score += 1
+    if "time" in text:
+        score += 1
+    if "administrator" in text:
+        score += 1
+    if "analyst" in text:
+        score += 1
+    if "specialist" in text:
+        score += 1
+    if "manager" in text:
+        score += 1
+    if "support" in text:
+        score += 1
+    if "consultant" in text:
+        score += 1
+
     return score
 
 def dedupe_jobs(jobs):
@@ -143,89 +180,83 @@ def is_relevant(job):
         job.get("link", ""),
     ]).lower()
 
-    if "dayforce" not in text and "ceridian" not in text:
+    if not any(keyword in text for keyword in KEYWORDS):
         return False
 
     job["score"] = score_job(job)
     return job["score"] >= MIN_SCORE
 
-def fetch_bing_results():
+def fetch_greenhouse_results():
     results = []
     headers = {"User-Agent": USER_AGENT}
 
-    for query in SEARCH_QUERIES:
-        url = f"https://www.bing.com/search?q={quote_plus(query)}"
-        try:
-            resp = requests.get(url, headers=headers, timeout=20)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-
-            for li in soup.select("li.b_algo"):
-                a = li.select_one("h2 a")
-                if not a:
-                    continue
-
-                title = clean_text(a.get_text(" ", strip=True))
-                href = a.get("href", "")
-
-                snippet_el = li.select_one(".b_caption p")
-                summary = clean_text(snippet_el.get_text(" ", strip=True)) if snippet_el else ""
-
-                blob = f"{title} {summary} {href}".lower()
-                if "dayforce" not in blob and "ceridian" not in blob:
-                    continue
-
-                results.append({
-                    "title": title[:180] or "Dayforce result",
-                    "company": "",
-                    "location": "",
-                    "summary": summary[:400],
-                    "link": href,
-                    "source": "Bing",
-                })
-        except Exception as e:
-            print(f"Bing search failed for '{query}': {e}")
-
-    return results
-
-def fetch_indeed_results():
-    results = []
-    headers = {"User-Agent": USER_AGENT}
-    urls = [
-        "https://www.indeed.com/jobs?q=Dayforce",
-        "https://www.indeed.com/jobs?q=Ceridian+Dayforce",
-    ]
-
-    for url in urls:
+    for url in GREENHOUSE_BOARDS:
         try:
             resp = requests.get(url, headers=headers, timeout=20)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
 
             for a in soup.select("a[href]"):
-                text = clean_text(a.get_text(" ", strip=True))
+                title = clean_text(a.get_text(" ", strip=True))
                 href = a.get("href", "")
 
-                blob = f"{text} {href}".lower()
-                if "dayforce" not in blob and "ceridian" not in blob:
+                if not title:
+                    continue
+
+                blob = f"{title} {href}".lower()
+                if not any(keyword in blob for keyword in KEYWORDS):
                     continue
 
                 if href.startswith("/"):
-                    href = f"https://www.indeed.com{href}"
-
-                if not href.startswith("http"):
-                    continue
+                    href = "https://boards.greenhouse.io" + href
 
                 results.append({
-                    "title": text[:180] or "Dayforce role",
-                    "company": "",
+                    "title": title[:180],
+                    "company": url.split("for=")[-1],
                     "location": "",
-                    "summary": text[:400],
+                    "summary": title[:400],
                     "link": href,
-                    "source": "Indeed",
+                    "source": "Greenhouse",
                 })
         except Exception as e:
-            print(f"Indeed search failed for {url}: {e}")
+            print(f"Greenhouse failed for {url}: {e}")
+
+    return results
+
+def fetch_lever_results():
+    results = []
+    headers = {"User-Agent": USER_AGENT}
+
+    for url in LEVER_BOARDS:
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            for a in soup.select("a[href]"):
+                title = clean_text(a.get_text(" ", strip=True))
+                href = a.get("href", "")
+
+                if not title:
+                    continue
+
+                blob = f"{title} {href}".lower()
+                if not any(keyword in blob for keyword in KEYWORDS):
+                    continue
+
+                if href.startswith("/"):
+                    href = url.rstrip("/") + href
+
+                results.append({
+                    "title": title[:180],
+                    "company": url.split("/")[-1],
+                    "location": "",
+                    "summary": title[:400],
+                    "link": href,
+                    "source": "Lever",
+                })
+        except Exception as e:
+            print(f"Lever failed for {url}: {e}")
 
     return results
 
@@ -274,15 +305,15 @@ def send_email(subject, body):
 def main():
     all_jobs = []
 
-    print("Fetching Bing results...")
-    bing_jobs = fetch_bing_results()
-    print(f"Bing results found: {len(bing_jobs)}")
-    all_jobs.extend(bing_jobs)
+    print("Fetching Greenhouse results...")
+    greenhouse_jobs = fetch_greenhouse_results()
+    print(f"Greenhouse results found: {len(greenhouse_jobs)}")
+    all_jobs.extend(greenhouse_jobs)
 
-    print("Fetching Indeed results...")
-    indeed_jobs = fetch_indeed_results()
-    print(f"Indeed results found: {len(indeed_jobs)}")
-    all_jobs.extend(indeed_jobs)
+    print("Fetching Lever results...")
+    lever_jobs = fetch_lever_results()
+    print(f"Lever results found: {len(lever_jobs)}")
+    all_jobs.extend(lever_jobs)
 
     print(f"Raw results before dedupe: {len(all_jobs)}")
 
@@ -306,8 +337,8 @@ def main():
     print(f"New jobs: {len(new_jobs)}")
 
     debug_summary = (
-        f"Bing results found: {len(bing_jobs)}\n"
-        f"Indeed results found: {len(indeed_jobs)}\n"
+        f"Greenhouse results found: {len(greenhouse_jobs)}\n"
+        f"Lever results found: {len(lever_jobs)}\n"
         f"Raw results after dedupe: {len(all_jobs)}\n"
         f"Relevant jobs: {len(relevant_jobs)}\n"
         f"New jobs: {len(new_jobs)}"
