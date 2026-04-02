@@ -19,13 +19,13 @@ MIN_SCORE = 1
 SEARCH_QUERIES = [
     "Dayforce jobs",
     "Ceridian Dayforce jobs",
-    "Dayforce payroll",
-    "Dayforce WFM",
-    "Dayforce HCM",
-    "Dayforce HRIS",
-    "Dayforce implementation",
-    "Dayforce migration",
-    "Dayforce integration",
+    "Dayforce payroll jobs",
+    "Dayforce WFM jobs",
+    "Dayforce HCM jobs",
+    "Dayforce HRIS jobs",
+    "Dayforce implementation jobs",
+    "Dayforce migration jobs",
+    "Dayforce integration jobs",
 ]
 
 EXCLUDE_COMPANIES = [
@@ -91,10 +91,10 @@ def score_job(job):
         job.get("company", ""),
         job.get("summary", ""),
         job.get("location", ""),
+        job.get("link", ""),
     ]).lower()
 
     score = 0
-
     if "dayforce" in text:
         score += 5
     if "ceridian" in text:
@@ -113,7 +113,6 @@ def score_job(job):
         score += 2
     if "integration" in text:
         score += 2
-
     return score
 
 def dedupe_jobs(jobs):
@@ -150,44 +149,42 @@ def is_relevant(job):
     job["score"] = score_job(job)
     return job["score"] >= MIN_SCORE
 
-def fetch_google_results():
+def fetch_bing_results():
     results = []
     headers = {"User-Agent": USER_AGENT}
 
     for query in SEARCH_QUERIES:
-        url = f"https://www.google.com/search?q={quote_plus(query)}"
+        url = f"https://www.bing.com/search?q={quote_plus(query)}"
         try:
             resp = requests.get(url, headers=headers, timeout=20)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            for a in soup.select("a[href]"):
-                href = a.get("href", "")
-                text = clean_text(a.get_text(" ", strip=True))
-
-                if not text and not href:
+            for li in soup.select("li.b_algo"):
+                a = li.select_one("h2 a")
+                if not a:
                     continue
 
-                blob = f"{text} {href}".lower()
+                title = clean_text(a.get_text(" ", strip=True))
+                href = a.get("href", "")
+
+                snippet_el = li.select_one(".b_caption p")
+                summary = clean_text(snippet_el.get_text(" ", strip=True)) if snippet_el else ""
+
+                blob = f"{title} {summary} {href}".lower()
                 if "dayforce" not in blob and "ceridian" not in blob:
                     continue
 
-                if href.startswith("/url?q="):
-                    href = href.split("/url?q=")[-1].split("&")[0]
-
-                if not href.startswith("http"):
-                    continue
-
                 results.append({
-                    "title": text[:180] or "Dayforce result",
+                    "title": title[:180] or "Dayforce result",
                     "company": "",
                     "location": "",
-                    "summary": text[:400],
+                    "summary": summary[:400],
                     "link": href,
-                    "source": "Google",
+                    "source": "Bing",
                 })
         except Exception as e:
-            print(f"Google search failed for '{query}': {e}")
+            print(f"Bing search failed for '{query}': {e}")
 
     return results
 
@@ -277,10 +274,10 @@ def send_email(subject, body):
 def main():
     all_jobs = []
 
-    print("Fetching Google results...")
-    google_jobs = fetch_google_results()
-    print(f"Google results found: {len(google_jobs)}")
-    all_jobs.extend(google_jobs)
+    print("Fetching Bing results...")
+    bing_jobs = fetch_bing_results()
+    print(f"Bing results found: {len(bing_jobs)}")
+    all_jobs.extend(bing_jobs)
 
     print("Fetching Indeed results...")
     indeed_jobs = fetch_indeed_results()
@@ -309,7 +306,7 @@ def main():
     print(f"New jobs: {len(new_jobs)}")
 
     debug_summary = (
-        f"Google results found: {len(google_jobs)}\n"
+        f"Bing results found: {len(bing_jobs)}\n"
         f"Indeed results found: {len(indeed_jobs)}\n"
         f"Raw results after dedupe: {len(all_jobs)}\n"
         f"Relevant jobs: {len(relevant_jobs)}\n"
